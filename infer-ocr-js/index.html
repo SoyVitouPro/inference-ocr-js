@@ -1,0 +1,155 @@
+<!-- index.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Khmer OCR (ONNX Runtime Web)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background: #0b0c10; color: #e6e6e6; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 18px; }
+    .topbar { display:flex; gap:12px; align-items:center; justify-content:space-between; margin-bottom: 14px; }
+    .card { background:#12131a; border:1px solid #222433; border-radius: 12px; padding: 14px; }
+    .row { display:flex; gap: 14px; }
+    .left { flex: 1.1; min-width: 360px; }
+    .right { flex: 0.9; min-width: 320px; }
+    .preview { width: 100%; height: 360px; background:#0f1016; border: 1px dashed #2a2d3f; border-radius: 12px; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+    .preview img { max-width: 100%; max-height: 100%; display:block; }
+    .btn { background:#2d5bff; color:white; border:none; padding: 10px 14px; border-radius: 10px; cursor:pointer; font-weight:600; }
+    .btn:disabled { opacity:.55; cursor:not-allowed; }
+    input[type="file"] { color:#ddd; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .out { white-space: pre-wrap; background:#0f1016; border: 1px solid #222433; border-radius: 12px; padding: 12px; min-height: 140px; }
+    .muted { color:#a9afc3; font-size: 13px; }
+    .kv { display:grid; grid-template-columns: 140px 1fr; gap: 8px; margin-top: 10px; }
+    .badge { display:inline-block; padding: 4px 8px; border-radius: 999px; background:#1a1c28; border:1px solid #2a2d3f; font-size:12px; color:#bfc6dd; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <div style="font-size:18px; font-weight:700;">Khmer OCR (CTC greedy)</div>
+        <div class="muted">Upload image → preview (left) → OCR result (right)</div>
+      </div>
+      <span class="badge mono">input: [1,1,32,640]</span>
+    </div>
+
+    <div class="row">
+      <div class="left card">
+        <div style="display:flex; gap:10px; align-items:center; justify-content:space-between; margin-bottom: 10px;">
+          <input id="file" type="file" accept="image/*" />
+          <button id="run" class="btn" disabled>Run OCR</button>
+        </div>
+
+        <div id="preview" class="preview">
+          <div class="muted">No image selected</div>
+        </div>
+
+        <div class="muted" style="margin-top:10px;">
+          Tip: model uses fixed width 640 (pads/squeezes like training).
+        </div>
+      </div>
+
+      <div class="right card">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+          <div style="font-weight:700;">Output</div>
+          <span id="status" class="badge">idle</span>
+        </div>
+
+        <div style="height:10px;"></div>
+        <div id="output" class="out mono"></div>
+
+        <div class="kv muted mono">
+          <div>ctc_logits shape</div><div id="ctcshape">-</div>
+          <div>mem_proj shape</div><div id="memshape">-</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+
+  <script type="module">
+    import { KhmerOCR } from "/static/khmerocr.js";
+
+    const fileEl = document.getElementById("file");
+    const runBtn = document.getElementById("run");
+    const preview = document.getElementById("preview");
+    const output = document.getElementById("output");
+    const status = document.getElementById("status");
+    const ctcshape = document.getElementById("ctcshape");
+    const memshape = document.getElementById("memshape");
+
+    let currentFile = null;
+
+    const ocr = new KhmerOCR({
+      modelUrl: "/static/ocr_encoder.onnx",
+      vocabUrl: "/static/vocab_char.json"
+    });
+
+    function setStatus(s) {
+      status.textContent = s;
+    }
+
+    function setPreview(file) {
+      preview.innerHTML = "";
+      const img = document.createElement("img");
+      img.src = URL.createObjectURL(file);
+      img.onload = () => URL.revokeObjectURL(img.src);
+      preview.appendChild(img);
+    }
+
+    fileEl.addEventListener("change", async (e) => {
+      const f = e.target.files?.[0];
+      currentFile = f || null;
+
+      if (!currentFile) {
+        runBtn.disabled = true;
+        preview.innerHTML = '<div class="muted">No image selected</div>';
+        output.textContent = "";
+        ctcshape.textContent = "-";
+        memshape.textContent = "-";
+        setStatus("idle");
+        return;
+      }
+
+      setPreview(currentFile);
+      output.textContent = "";
+      ctcshape.textContent = "-";
+      memshape.textContent = "-";
+      runBtn.disabled = false;
+      setStatus("ready");
+    });
+
+    runBtn.addEventListener("click", async () => {
+      if (!currentFile) return;
+
+      runBtn.disabled = true;
+      output.textContent = "";
+      setStatus("loading");
+
+      try {
+        await ocr.init();
+        setStatus("running");
+
+        const res = await ocr.inferFromFile(currentFile);
+
+        output.textContent = res.text || "";
+        ctcshape.textContent = res.ctcShape ? res.ctcShape.join("x") : "-";
+        memshape.textContent = res.memShape ? res.memShape.join("x") : "-";
+
+        setStatus("done");
+      } catch (err) {
+        console.error(err);
+        output.textContent = String(err?.message || err);
+        setStatus("error");
+      } finally {
+        runBtn.disabled = false;
+      }
+    });
+
+    setStatus("idle");
+  </script>
+</body>
+</html>
